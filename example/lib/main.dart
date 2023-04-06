@@ -25,9 +25,24 @@ class _MyAppState extends State<MyApp> {
   void initState() {
     super.initState();
 
+    // getPermission().then((value) {
+    //   if (value) {
+    //     _listenForSmsPlugin.smsStream().listen((value) {
+    //       if(value == '') return;
+    //
+    //       sms = value.toString().substring(9, 15);
+    //       print(value);
+    //       print(':::');
+    //       setState(() {});
+    //     });
+    //   }
+    // }
+    // );
+
     getPermission().then((value) {
       if (value) {
-        _listenForSmsPlugin.smsStream().listen((value) {
+        _listenForSmsPlugin.startListening(smsCodeRegexPattern: '');
+        _listenForSmsPlugin.code.listen((value) {
           if(value == '') return;
 
           sms = value.toString().substring(9, 15);

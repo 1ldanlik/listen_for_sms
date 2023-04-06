@@ -4,21 +4,24 @@ import android.app.Activity
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.net.wifi.hotspot2.pps.Credential
+import android.content.IntentFilter
 import androidx.annotation.NonNull
 import com.google.android.gms.auth.api.phone.SmsRetriever
 import com.google.android.gms.auth.api.phone.SmsRetrieverClient
+import com.google.android.gms.common.api.CommonStatusCodes
+import com.google.android.gms.common.api.Status
 import com.google.android.gms.tasks.OnSuccessListener
 import com.google.android.gms.tasks.Task
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
-import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.plugin.common.MethodChannel.Result
 import io.flutter.plugin.common.PluginRegistry
+import java.lang.ref.WeakReference
+import java.util.regex.Pattern
 
 
 /** ListenForSmsPlugin */
@@ -31,33 +34,36 @@ class ListenForSmsPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
         private const val PHONE_HINT_REQUEST = 11012
         private const val CHANNEL_NAME = "listen_for_sms"
     }
+
     private lateinit var context: Context
     private lateinit var activity: Activity
     private lateinit var channel: MethodChannel
-    private val pendingHintResult: Result? = null
-    private var broadcastReceiver: BroadcastReceiver? = null
+    private var result: Result? = null
+
+    //    private val pendingHintResult: Result? = null
+//    private var broadcastReceiver: BroadcastReceiver? = null
+    private var broadcastReceiver: SmsBroadcastReceiver? = null
 
     private val activityResultListener: PluginRegistry.ActivityResultListener = object : PluginRegistry.ActivityResultListener {
 
 
         override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?): Boolean {
-            if (requestCode == PHONE_HINT_REQUEST && pendingHintResult != null) {
-                if (resultCode == Activity.RESULT_OK && data != null) {
-                    val credential: Credential? = data.getParcelableExtra<Credential>("Credential")!!
-                    val phoneNumber: String = credential.getId()
-                    pendingHintResult.success(phoneNumber)
-                } else {
-                    pendingHintResult.success(null)
-                }
-                return true
-            }
+//            if (requestCode == PHONE_HINT_REQUEST && pendingHintResult != null) {
+//                if (resultCode == Activity.RESULT_OK && data != null) {
+//                    val credential: Credential? = data.getParcelableExtra<Credential>("adasdsads")!!
+//                    val phoneNumber: String = credential.getId()
+//                    pendingHintResult.success(phoneNumber)
+//                } else {
+//                    pendingHintResult.success(null)
+//                }
+//                return true
+//            }
             return false
         }
     }
 
-
     override fun onAttachedToEngine(@NonNull flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
-        channel = MethodChannel(flutterPluginBinding.binaryMessenger, "com.example.app/smsStream")
+        channel = MethodChannel(flutterPluginBinding.binaryMessenger, CHANNEL_NAME)
         channel.setMethodCallHandler(this)
         context = flutterPluginBinding.applicationContext
     }
@@ -73,18 +79,24 @@ class ListenForSmsPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                 result.success("Android ${android.os.Build.VERSION.RELEASE}")
             }
             "startListening" -> {
-                val smsCodeRegexPattern : String? = call.argument("smsCodeRegexPattern")
-                val client : SmsRetrieverClient = SmsRetriever.getClient(activity)
+//                SmsRetriever.getClient(activity.application).startSmsRetriever()
+//                this@ListenForSmsPlugin.result = result
+                val smsCodeRegexPattern: String = call.argument<String>("smsCodeRegexPattern") ?: ""
+                val client: SmsRetrieverClient = SmsRetriever.getClient(activity)
                 val task: Task<Void> = client.startSmsRetriever()
 
-                task.addOnSuccessListener { OnSuccessListener<Void>() {
-                    unregisterReceiver()
-                } }
-
-                startListening()
+                task.addOnSuccessListener {
+                    OnSuccessListener<Void>() {
+                        unregisterReceiver()
+                        broadcastReceiver = SmsBroadcastReceiver(WeakReference(this), smsCodeRegexPattern)
+                        activity.registerReceiver(broadcastReceiver, IntentFilter(SmsRetriever.SMS_RETRIEVED_ACTION))
+                        result.success(null)
+                    }
+                }
             }
             "stopListening" -> {
-                stopListening()
+                unregisterReceiver()
+                result.success("successfully unregister receiver")
             }
             else -> {
                 result.notImplemented()
@@ -103,19 +115,17 @@ class ListenForSmsPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
         }
     }
 
-    private fun setupChannel(messenger: BinaryMessenger) {
-        channel = MethodChannel(messenger, CHANNEL_NAME)
-        channel.setMethodCallHandler(this)
+    fun setCode(code: String?) {
+        channel.invokeMethod("smscode", code)
     }
+
+//    private fun setupChannel(messenger: BinaryMessenger) {
+//        channel = MethodChannel(messenger, CHANNEL_NAME)
+//        channel.setMethodCallHandler(this)
+//    }
 
     override fun onDetachedFromEngine(@NonNull binding: FlutterPlugin.FlutterPluginBinding) {
         channel.setMethodCallHandler(null)
-    }
-
-    private fun startListening() {
-    }
-
-    private fun stopListening() {
     }
 
     override fun onAttachedToActivity(binding: ActivityPluginBinding) {
@@ -134,5 +144,45 @@ class ListenForSmsPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
 
     override fun onDetachedFromActivity() {
         unregisterReceiver()
+    }
+
+    private class SmsBroadcastReceiver constructor(plugin: WeakReference<ListenForSmsPlugin>, smsCodeRegexPattern: String) : BroadcastReceiver() {
+        val plugin: WeakReference<ListenForSmsPlugin>
+        val smsCodeRegexPattern: String
+
+        init {
+            this.plugin = plugin
+            this.smsCodeRegexPattern = smsCodeRegexPattern
+        }
+
+        override fun onReceive(context: Context, intent: Intent) {
+            if (SmsRetriever.SMS_RETRIEVED_ACTION == intent.action) {
+                if (plugin.get() == null) {
+                    return
+                } else {
+                    plugin.get()!!.activity.unregisterReceiver(this)
+                }
+                val extras = intent.extras
+                val status: Status?
+                if (extras != null) {
+                    status = extras[SmsRetriever.EXTRA_STATUS] as Status?
+                    if (status != null) {
+                        if (status.statusCode == CommonStatusCodes.SUCCESS) {
+                            // Get SMS message contents
+                            val message = extras[SmsRetriever.EXTRA_SMS_MESSAGE] as String?
+                            val pattern = Pattern.compile(smsCodeRegexPattern)
+                            if (message != null) {
+                                val matcher = pattern.matcher(message)
+                                if (matcher.find()) {
+                                    plugin.get()?.setCode(matcher.group(0))
+                                } else {
+                                    plugin.get()?.setCode(message)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
